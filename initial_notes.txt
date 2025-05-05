@@ -1,0 +1,6 @@
+1. Zostajemy przy zmianie imputu
+2. Pipeline:
+
+RAW DATA ->  TRAIN THE MODEL -> TEST THE TRANSFORMED INPUT
+
+inDISTrialrEVOLUTION
