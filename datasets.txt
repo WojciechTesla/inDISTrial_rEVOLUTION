@@ -1,0 +1,6 @@
+https://archive.ics.uci.edu/static/public/53/iris.zip iris.zip
+https://archive.ics.uci.edu/static/public/236/seeds.zip seeds.zip
+https://archive.ics.uci.edu/static/public/186/wine+quality.zip wine.zip
+https://archive.ics.uci.edu/static/public/267/banknote+authentication.zip banknote.zip
+https://archive.ics.uci.edu/static/public/2/adult.zip adult.zip
+https://archive.ics.uci.edu/static/public/45/heart+disease.zip heart.zip
