@@ -1,0 +1,9 @@
+k - number of clusters
+cohesion separation
+☆ - good ones for fitness
+1. Dunn index: used to optimize k, uses min and max no Σ
+2. DB index: Σ over k - average worst normalized inter distance 
+3☆. Silhouette Index: difference between inter and intra normalized by max of them [-1,1]
+https://scikit-learn.org/stable/modules/generated/sklearn.metrics.silhouette_score.html
+4. Calinski-Harabasz: uses variances of centroids and points 
+
