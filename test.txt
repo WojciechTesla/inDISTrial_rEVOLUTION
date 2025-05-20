@@ -1,0 +1,746 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.metrics import accuracy_score, silhouette_score, confusion_matrix
+from sklearn.metrics import classification_report, make_scorer
+from sklearn.metrics.pairwise import euclidean_distances, cosine_distances
+from sklearn.neighbors import KNeighborsClassifier, NeighborhoodComponentsAnalysis
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.datasets import load_iris, load_wine, fetch_openml
+from sklearn.pipeline import Pipeline
+import warnings
+import time
+from scipy.spatial.distance import pdist, squareform
+from metric_learn import (
+    LMNN,
+    Mahalanobis,
+)
+import joblib
+import os
+from datetime import datetime
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+class MetricEvaluator:
+    """
+    Framework for evaluating different distance metrics with various classifiers.
+    """
+    
+    def __init__(self, random_state=42):
+        """Initialize the evaluator with a random state for reproducibility."""
+        self.random_state = random_state
+        self.results = {}
+        self.models = {}
+        self.metrics = {}
+        self.datasets = {}
+        self.transformers = {}
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.results_dir = "evaluation_results"
+        os.makedirs(self.results_dir, exist_ok=True)
+        
+    def add_dataset(self, name, X, y, description=None):
+        """Add a dataset to the evaluator."""
+        self.datasets[name] = {
+            'X': X,
+            'y': y,
+            'description': description or name
+        }
+        print(f"Added dataset: {name} with shape {X.shape}")
+        return self
+        
+    def load_standard_dataset(self, dataset_name):
+        """Load one of the standard datasets."""
+        if dataset_name.lower() == 'iris':
+            data = load_iris()
+            X, y = data.data, data.target
+            description = "Iris Dataset"
+        elif dataset_name.lower() == 'wine':
+            data = load_wine()
+            X, y = data.data, data.target
+            description = "Wine Dataset"
+        elif dataset_name.lower() == 'banknote':
+            data = fetch_openml(name='banknote-authentication', version=1, as_frame=False)
+            X, y = data.data, data.target.astype(int)
+            description = "Banknote Authentication Dataset"
+        else:
+            raise ValueError(f"Dataset {dataset_name} not recognized")
+            
+        self.add_dataset(dataset_name, X, y, description)
+        return self
+
+    def prepare_data(self, dataset_name, test_size=0.2, scale=True):
+        """Prepare the data by splitting and optionally scaling."""
+        if dataset_name not in self.datasets:
+            raise ValueError(f"Dataset {dataset_name} not found. Add it first with add_dataset().")
+            
+        X = self.datasets[dataset_name]['X']
+        y = self.datasets[dataset_name]['y']
+        
+        # Split the data
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=test_size, random_state=self.random_state, stratify=y
+        )
+        
+        # Scale if needed
+        if scale:
+            scaler = StandardScaler()
+            self.X_train = scaler.fit_transform(self.X_train)
+            self.X_test = scaler.transform(self.X_test)
+            self.transformers['scaler'] = scaler
+            
+        print(f"Data prepared: X_train {self.X_train.shape}, X_test {self.X_test.shape}")
+        self.current_dataset = dataset_name
+        return self
+        
+    def add_standard_metrics(self):
+        """Add standard distance metrics for comparison."""
+        # Basic metrics
+        self.add_metric('euclidean', lambda X, Y=None: euclidean_distances(X, Y))
+        self.add_metric('cosine', lambda X, Y=None: cosine_distances(X, Y))
+        
+        # Add Mahalanobis with identity matrix (equivalent to Euclidean)
+        def mahalanobis_identity(X, Y=None):
+            n_features = X.shape[1]
+            M = np.eye(n_features)
+            return self._mahalanobis_distance(X, Y, M)
+        
+        self.add_metric('mahalanobis_identity', mahalanobis_identity)
+        
+        print("Added standard metrics: euclidean, cosine, mahalanobis_identity")
+        return self
+        
+    def add_ml_metrics(self):
+        """Add metric learning based distance metrics."""
+        # LMNN (Large Margin Nearest Neighbor)
+        if self.X_train is None:
+            raise ValueError("Data must be prepared first using prepare_data()")
+            
+        print("Training LMNN metric...")
+        lmnn = LMNN(k=3, random_state=self.random_state)
+        lmnn.fit(self.X_train, self.y_train)
+        
+        def lmnn_distance(X, Y=None):
+            X_transformed = lmnn.transform(X)
+            if Y is None:
+                Y_transformed = X_transformed
+            else:
+                Y_transformed = lmnn.transform(Y)
+            return euclidean_distances(X_transformed, Y_transformed)
+            
+        self.add_metric('lmnn', lmnn_distance)
+        self.transformers['lmnn'] = lmnn
+        
+        # NCA (Neighborhood Components Analysis)
+        print("Training NCA metric...")
+        nca = NeighborhoodComponentsAnalysis(random_state=self.random_state)
+        nca.fit(self.X_train, self.y_train)
+        
+        def nca_distance(X, Y=None):
+            X_transformed = nca.transform(X)
+            if Y is None:
+                Y_transformed = X_transformed
+            else:
+                Y_transformed = nca.transform(Y)
+            return euclidean_distances(X_transformed, Y_transformed)
+            
+        self.add_metric('nca', nca_distance)
+        self.transformers['nca'] = nca
+        
+        print("Added ML metrics: lmnn, nca")
+        return self
+        
+    def add_custom_metric(self, name, distance_fn, transformer=None):
+        """Add a custom distance metric."""
+        self.add_metric(name, distance_fn)
+        if transformer is not None:
+            self.transformers[name] = transformer
+        return self
+        
+    def add_evolved_mahalanobis(self, M):
+        """Add an evolved Mahalanobis metric with the given matrix M."""
+        def evolved_mahalanobis(X, Y=None):
+            return self._mahalanobis_distance(X, Y, M)
+            
+        self.add_metric('evolved_mahalanobis', evolved_mahalanobis)
+        self.transformers['evolved_mahalanobis_matrix'] = M
+        return self
+        
+    def _mahalanobis_distance(self, X, Y=None, M=None):
+        """Calculate Mahalanobis distance with matrix M."""
+        if Y is None:
+            Y = X
+            
+        n_samples_X = X.shape[0]
+        n_samples_Y = Y.shape[0]
+        distances = np.zeros((n_samples_X, n_samples_Y))
+        
+        for i in range(n_samples_X):
+            for j in range(n_samples_Y):
+                diff = X[i] - Y[j]
+                distances[i, j] = np.sqrt(diff.dot(M).dot(diff))
+                
+        return distances
+        
+    def add_metric(self, name, distance_fn):
+        """Add a distance metric to the evaluator."""
+        self.metrics[name] = distance_fn
+        print(f"Added metric: {name}")
+        return self
+        
+    def evaluate_classifier(self, clf_name, clf, metric_name, cv=5):
+        """Evaluate a single classifier with a specific metric."""
+        if self.X_train is None:
+            raise ValueError("Data must be prepared first using prepare_data()")
+            
+        if metric_name not in self.metrics:
+            raise ValueError(f"Metric {metric_name} not found")
+            
+        distance_fn = self.metrics[metric_name]
+        start_time = time.time()
+        
+        results = {}
+        
+        # For KNN, we need to use the custom metric
+        if clf_name == 'k-NN':
+            # For KNN, we need to modify the classifier to use our distance function
+            if isinstance(clf, KNeighborsClassifier):
+                def custom_metric(x, y):
+                    return distance_fn(x.reshape(1, -1), y.reshape(1, -1))[0][0]
+                
+                clf = KNeighborsClassifier(
+                    n_neighbors=clf.n_neighbors,
+                    metric=custom_metric,
+                    algorithm='brute'  # Required for custom metrics
+                )
+        
+        # For SVM with custom kernel
+        elif clf_name == 'SVM':
+            if isinstance(clf, SVC) and clf.kernel == 'precomputed':
+                # Compute the kernel matrix
+                dist_matrix = distance_fn(self.X_train)
+                # Convert distance to similarity using RBF transformation
+                gamma = 1.0 / self.X_train.shape[1]  # Default gamma
+                kernel_matrix = np.exp(-gamma * dist_matrix)
+                
+                # Train the SVM with the precomputed kernel
+                clf.fit(kernel_matrix, self.y_train)
+                
+                # Compute test kernel matrix
+                test_dist_matrix = distance_fn(self.X_test, self.X_train)
+                test_kernel_matrix = np.exp(-gamma * test_dist_matrix)
+                
+                # Predict using the test kernel matrix
+                y_pred = clf.predict(test_kernel_matrix)
+                test_acc = accuracy_score(self.y_test, y_pred)
+                
+                # Cross-validation for SVM with precomputed kernel is complex
+                # We'll use a simpler approach for CV with precomputed kernels
+                cv_scores = []
+                skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=self.random_state)
+                
+                for train_idx, val_idx in skf.split(self.X_train, self.y_train):
+                    X_cv_train, X_cv_val = self.X_train[train_idx], self.X_train[val_idx]
+                    y_cv_train, y_cv_val = self.y_train[train_idx], self.y_train[val_idx]
+                    
+                    # Compute kernel matrices for this fold
+                    cv_dist_matrix = distance_fn(X_cv_train)
+                    cv_kernel_matrix = np.exp(-gamma * cv_dist_matrix)
+                    
+                    cv_model = SVC(kernel='precomputed', random_state=self.random_state)
+                    cv_model.fit(cv_kernel_matrix, y_cv_train)
+                    
+                    val_dist_matrix = distance_fn(X_cv_val, X_cv_train)
+                    val_kernel_matrix = np.exp(-gamma * val_dist_matrix)
+                    
+                    val_pred = cv_model.predict(val_kernel_matrix)
+                    cv_scores.append(accuracy_score(y_cv_val, val_pred))
+                
+                cv_acc = np.mean(cv_scores)
+                
+                results = {
+                    'test_accuracy': test_acc,
+                    'cv_accuracy': cv_acc,
+                    'training_time': time.time() - start_time,
+                    'confusion_matrix': confusion_matrix(self.y_test, y_pred),
+                    'classification_report': classification_report(self.y_test, y_pred, output_dict=True)
+                }
+                
+                # Try to compute silhouette score (may fail for some distance metrics)
+                try:
+                    # Calculate distance matrix for silhouette
+                    dist_matrix_all = distance_fn(self.X_test)
+                    # Convert distances to a condensed form required by silhouette_score
+                    condensed_distances = squareform(dist_matrix_all)
+                    s_score = silhouette_score(
+                        X=None, 
+                        labels=self.y_test, 
+                        metric='precomputed', 
+                        precomputed_distances=condensed_distances
+                    )
+                    results['silhouette_score'] = s_score
+                except Exception as e:
+                    print(f"Warning: Could not calculate silhouette score: {e}")
+                    results['silhouette_score'] = None
+                
+                model_key = f"{self.current_dataset}_{clf_name}_{metric_name}"
+                self.models[model_key] = clf
+                
+                # Store results
+                if self.current_dataset not in self.results:
+                    self.results[self.current_dataset] = {}
+                if clf_name not in self.results[self.current_dataset]:
+                    self.results[self.current_dataset][clf_name] = {}
+                
+                self.results[self.current_dataset][clf_name][metric_name] = results
+                return results
+        
+        # For all other classifiers or non-precomputed SVM
+        # Fit the classifier
+        clf.fit(self.X_train, self.y_train)
+        
+        # Get predictions
+        y_pred = clf.predict(self.X_test)
+        test_acc = accuracy_score(self.y_test, y_pred)
+        
+        # Cross-validation
+        cv_scores = cross_val_score(clf, self.X_train, self.y_train, cv=cv, scoring='accuracy')
+        cv_acc = cv_scores.mean()
+        
+        results = {
+            'test_accuracy': test_acc,
+            'cv_accuracy': cv_acc,
+            'training_time': time.time() - start_time,
+            'confusion_matrix': confusion_matrix(self.y_test, y_pred),
+            'classification_report': classification_report(self.y_test, y_pred, output_dict=True)
+        }
+        
+        # Try to compute silhouette score
+        try:
+            # For standard metrics, we can directly compute silhouette
+            if metric_name in ['euclidean', 'cosine']:
+                s_score = silhouette_score(
+                    self.X_test, 
+                    self.y_test, 
+                    metric=metric_name.replace('_', '')
+                )
+            else:
+                # For custom metrics, we need to precompute the distance matrix
+                dist_matrix = distance_fn(self.X_test)
+                # Ensure the matrix is symmetric for silhouette calculation
+                if not np.allclose(dist_matrix, dist_matrix.T):
+                    dist_matrix = (dist_matrix + dist_matrix.T) / 2
+                # Convert to condensed form
+                condensed_distances = squareform(dist_matrix)
+                s_score = silhouette_score(
+                    X=None, 
+                    labels=self.y_test, 
+                    metric='precomputed', 
+                    precomputed_distances=condensed_distances
+                )
+            results['silhouette_score'] = s_score
+        except Exception as e:
+            print(f"Warning: Could not calculate silhouette score: {e}")
+            results['silhouette_score'] = None
+            
+        # Store the model
+        model_key = f"{self.current_dataset}_{clf_name}_{metric_name}"
+        self.models[model_key] = clf
+        
+        # Store results
+        if self.current_dataset not in self.results:
+            self.results[self.current_dataset] = {}
+        if clf_name not in self.results[self.current_dataset]:
+            self.results[self.current_dataset][clf_name] = {}
+            
+        self.results[self.current_dataset][clf_name][metric_name] = results
+        return results
+        
+    def evaluate_all_classifiers(self, metric_names=None):
+        """Evaluate all standard classifiers with specified metrics."""
+        if self.X_train is None:
+            raise ValueError("Data must be prepared first using prepare_data()")
+            
+        if metric_names is None:
+            metric_names = list(self.metrics.keys())
+            
+        # Define the classifiers
+        classifiers = {
+            'k-NN': KNeighborsClassifier(n_neighbors=3),
+            'SVM': SVC(kernel='precomputed', random_state=self.random_state),
+            'Decision Tree': DecisionTreeClassifier(random_state=self.random_state)
+        }
+        
+        all_results = {}
+        
+        for clf_name, clf in classifiers.items():
+            all_results[clf_name] = {}
+            for metric_name in metric_names:
+                print(f"Evaluating {clf_name} with {metric_name} metric...")
+                result = self.evaluate_classifier(clf_name, clf, metric_name)
+                all_results[clf_name][metric_name] = result
+                
+        return all_results
+        
+    def summarize_results(self, output_format='dataframe'):
+        """Summarize the evaluation results."""
+        if not self.results:
+            raise ValueError("No evaluation results available. Run evaluate_classifier() first.")
+            
+        summary = []
+        
+        for dataset_name, dataset_results in self.results.items():
+            for clf_name, clf_results in dataset_results.items():
+                for metric_name, metrics in clf_results.items():
+                    row = {
+                        'Dataset': dataset_name,
+                        'Classifier': clf_name,
+                        'Metric': metric_name,
+                        'Test Accuracy': metrics.get('test_accuracy', None),
+                        'CV Accuracy': metrics.get('cv_accuracy', None),
+                        'Silhouette Score': metrics.get('silhouette_score', None),
+                        'Training Time (s)': metrics.get('training_time', None)
+                    }
+                    summary.append(row)
+                    
+        if output_format.lower() == 'dataframe':
+            return pd.DataFrame(summary)
+        else:
+            return summary
+            
+    def plot_results(self, dataset_name=None, metric='test_accuracy', figsize=(12, 6)):
+        """Plot the evaluation results."""
+        if not self.results:
+            raise ValueError("No evaluation results available. Run evaluate_classifier() first.")
+            
+        if dataset_name is None:
+            if self.current_dataset:
+                dataset_name = self.current_dataset
+            else:
+                dataset_name = list(self.results.keys())[0]
+                
+        dataset_results = self.results.get(dataset_name, None)
+        if dataset_results is None:
+            raise ValueError(f"No results for dataset {dataset_name}")
+            
+        # Create a dataframe for plotting
+        plot_data = []
+        for clf_name, clf_results in dataset_results.items():
+            for metric_name, metrics in clf_results.items():
+                value = metrics.get(metric, None)
+                if value is not None:
+                    plot_data.append({
+                        'Classifier': clf_name,
+                        'Metric': metric_name,
+                        metric: value
+                    })
+                    
+        df = pd.DataFrame(plot_data)
+        
+        # Plot
+        plt.figure(figsize=figsize)
+        ax = sns.barplot(x='Classifier', y=metric, hue='Metric', data=df)
+        
+        plt.title(f'{metric.replace("_", " ").title()} for {dataset_name}')
+        plt.xlabel('Classifier')
+        plt.ylabel(metric.replace('_', ' ').title())
+        plt.xticks(rotation=45)
+        plt.legend(title='Distance Metric')
+        plt.tight_layout()
+        
+        # Save the plot
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        plot_path = os.path.join(self.results_dir, f"{dataset_name}_{metric}_{timestamp}.png")
+        plt.savefig(plot_path)
+        print(f"Plot saved to {plot_path}")
+        
+        return ax
+        
+    def visualize_data_transformation(self, metric_name, method='tsne', figsize=(12, 10)):
+        """Visualize how a metric transforms the data space."""
+        if self.X_train is None:
+            raise ValueError("Data must be prepared first using prepare_data()")
+            
+        if metric_name not in self.metrics and metric_name not in self.transformers:
+            raise ValueError(f"Metric or transformer {metric_name} not found")
+            
+        # Get transformer if available
+        transformer = self.transformers.get(metric_name, None)
+        
+        # If we have a direct transformer (like NCA or LMNN)
+        if transformer and hasattr(transformer, 'transform'):
+            X_transformed = transformer.transform(self.X_test)
+        # If we only have a distance function
+        elif metric_name in self.metrics:
+            # Compute distance matrix
+            distance_fn = self.metrics[metric_name]
+            dist_matrix = distance_fn(self.X_test)
+            
+            # Use t-SNE or PCA to visualize the distance matrix
+            if method.lower() == 'tsne':
+                embedding = TSNE(
+                    n_components=2, 
+                    metric='precomputed',
+                    random_state=self.random_state
+                ).fit_transform(dist_matrix)
+                X_transformed = embedding
+            else:  # PCA
+                embedding = PCA(
+                    n_components=2,
+                    random_state=self.random_state
+                ).fit_transform(dist_matrix)
+                X_transformed = embedding
+        else:
+            raise ValueError(f"Cannot visualize {metric_name} - no transformer or distance function available")
+            
+        # Cap to 2 dimensions for visualization
+        if X_transformed.shape[1] > 2:
+            if method.lower() == 'tsne':
+                X_transformed = TSNE(
+                    n_components=2,
+                    random_state=self.random_state
+                ).fit_transform(X_transformed)
+            else:  # PCA
+                X_transformed = PCA(
+                    n_components=2,
+                    random_state=self.random_state
+                ).fit_transform(X_transformed)
+                
+        # Plot
+        plt.figure(figsize=figsize)
+        
+        # Get unique classes
+        unique_classes = np.unique(self.y_test)
+        colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_classes)))
+        
+        for i, class_val in enumerate(unique_classes):
+            idx = self.y_test == class_val
+            plt.scatter(
+                X_transformed[idx, 0], 
+                X_transformed[idx, 1],
+                color=colors[i],
+                label=f'Class {class_val}',
+                alpha=0.7
+            )
+            
+        plt.title(f'Data Transformation using {metric_name} visualized with {method}')
+        plt.xlabel('Component 1')
+        plt.ylabel('Component 2')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Save the plot
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        plot_path = os.path.join(
+            self.results_dir, 
+            f"{self.current_dataset}_{metric_name}_{method}_{timestamp}.png"
+        )
+        plt.savefig(plot_path)
+        print(f"Visualization saved to {plot_path}")
+        
+        return plt
+        
+    def save_results(self, filename=None):
+        """Save the evaluation results to a file."""
+        if not self.results:
+            raise ValueError("No evaluation results available. Run evaluate_classifier() first.")
+            
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(self.results_dir, f"evaluation_results_{timestamp}.pkl")
+            
+        # Create a results dictionary
+        results_dict = {
+            'results': self.results,
+            'dataset_names': list(self.datasets.keys()),
+            'metric_names': list(self.metrics.keys()),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Save the results
+        joblib.dump(results_dict, filename)
+        print(f"Results saved to {filename}")
+        
+        # Also save as CSV for easy viewing
+        csv_filename = os.path.splitext(filename)[0] + '.csv'
+        summary_df = self.summarize_results()
+        summary_df.to_csv(csv_filename, index=False)
+        print(f"Summary saved to {csv_filename}")
+        
+        return filename
+        
+    def load_results(self, filename):
+        """Load evaluation results from a file."""
+        loaded_data = joblib.load(filename)
+        self.results = loaded_data['results']
+        print(f"Loaded results from {filename}")
+        return self
+        
+    def fisher_criterion(self, X, y):
+        """Calculate Fisher's criterion for feature discriminative power.
+        
+        Higher values indicate better class separation.
+        """
+        # Get unique classes
+        classes = np.unique(y)
+        n_classes = len(classes)
+        n_features = X.shape[1]
+        
+        # Calculate global mean
+        global_mean = np.mean(X, axis=0)
+        
+        # Calculate between-class scatter matrix
+        S_b = np.zeros((n_features, n_features))
+        for c in classes:
+            X_c = X[y == c]
+            mean_c = np.mean(X_c, axis=0)
+            n_c = X_c.shape[0]
+            
+            # Update between-class scatter
+            mean_diff = mean_c - global_mean
+            S_b += n_c * np.outer(mean_diff, mean_diff)
+            
+        # Calculate within-class scatter matrix
+        S_w = np.zeros((n_features, n_features))
+        for c in classes:
+            X_c = X[y == c]
+            mean_c = np.mean(X_c, axis=0)
+            
+            # Center the data
+            X_c_centered = X_c - mean_c
+            
+            # Update within-class scatter
+            S_w += X_c_centered.T @ X_c_centered
+            
+        # Calculate Fisher's criterion (trace ratio)
+        try:
+            # Add small regularization to avoid singularity
+            S_w_reg = S_w + np.eye(n_features) * 1e-10
+            fisher_score = np.trace(np.linalg.inv(S_w_reg) @ S_b)
+        except np.linalg.LinAlgError:
+            # If S_w is singular, use pseudoinverse
+            fisher_score = np.trace(np.linalg.pinv(S_w) @ S_b)
+            
+        return fisher_score
+        
+    def calculate_generalization_gap(self, clf_name, metric_name):
+        """Calculate the generalization gap for a classifier-metric pair."""
+        if self.current_dataset not in self.results:
+            raise ValueError(f"No results for dataset {self.current_dataset}")
+            
+        if clf_name not in self.results[self.current_dataset]:
+            raise ValueError(f"No results for classifier {clf_name}")
+            
+        if metric_name not in self.results[self.current_dataset][clf_name]:
+            raise ValueError(f"No results for metric {metric_name}")
+            
+        results = self.results[self.current_dataset][clf_name][metric_name]
+        
+        train_acc = results.get('train_accuracy', None)
+        test_acc = results.get('test_accuracy', None)
+        
+        if train_acc is None:
+            # Recompute train accuracy if not available
+            model_key = f"{self.current_dataset}_{clf_name}_{metric_name}"
+            model = self.models.get(model_key, None)
+            
+            if model is None:
+                raise ValueError(f"Model for {model_key} not found")
+                
+            y_train_pred = model.predict(self.X_train)
+            train_acc = accuracy_score(self.y_train, y_train_pred)
+            self.results[self.current_dataset][clf_name][metric_name]['train_accuracy'] = train_acc
+            
+        # Calculate generalization gap
+        gen_gap = train_acc - test_acc
+        self.results[self.current_dataset][clf_name][metric_name]['generalization_gap'] = gen_gap
+        
+        return gen_gap
+        
+    def estimate_model_complexity(self, clf_name, metric_name):
+        """Estimate model complexity for a classifier-metric pair."""
+        model_key = f"{self.current_dataset}_{clf_name}_{metric_name}"
+        model = self.models.get(model_key, None)
+        
+        if model is None:
+            raise ValueError(f"Model for {model_key} not found")
+            
+        complexity = None
+        
+        # For Decision Tree
+        if clf_name == 'Decision Tree':
+            complexity = model.get_n_leaves()
+            
+        # For k-NN, complexity is related to number of neighbors
+        elif clf_name == 'k-NN':
+            if hasattr(model, 'n_neighbors'):
+                complexity = 1 / model.n_neighbors  # Inverse of k (lower k = higher complexity)
+                
+        # For SVM, complexity is related to number of support vectors
+        elif clf_name == 'SVM':
+            if hasattr(model, 'support_vectors_'):
+                complexity = len(model.support_vectors_)
+                
+        if complexity is not None:
+            if self.current_dataset not in self.results:
+                self.results[self.current_dataset] = {}
+            if clf_name not in self.results[self.current_dataset]:
+                self.results[self.current_dataset][clf_name] = {}
+            if metric_name not in self.results[self.current_dataset][clf_name]:
+                self.results[self.current_dataset][clf_name][metric_name] = {}
+                
+            self.results[self.current_dataset][clf_name][metric_name]['complexity'] = complexity
+            
+        return complexity
+
+
+def load_additional_datasets():
+    """Function to load additional datasets for comparison or transfer learning experiments."""
+    datasets = {}
+    
+    try:
+        # Wine Quality - Red
+        red_wine = fetch_openml(name='wine-quality-red', version=1, as_frame=False)
+        datasets['red_wine'] = {
+            'X': red_wine.data, 
+            'y': (red_wine.target > 5).astype(int),  # Binarize: good (>5) vs bad quality
+            'description': "Wine Quality - Red"
+        }
+        
+        # Wine Quality - White
+        white_wine = fetch_openml(name='wine-quality-white', version=1, as_frame=False)
+        datasets['white_wine'] = {
+            'X': white_wine.data,
+            'y': (white_wine.target > 5).astype(int),  # Binarize: good (>5) vs bad quality
+            'description': "Wine Quality - White"
+        }
+        
+        # Seeds Dataset
+        seeds = fetch_openml(name='seeds', version=1, as_frame=False)
+        datasets['seeds'] = {
+            'X': seeds.data,
+            'y': seeds.target.astype(int),
+            'description': "Seeds Dataset"
+        }
+        
+        # Heart Disease
+        heart = fetch_openml(name='heart-statlog', version=1, as_frame=False)
+        datasets['heart'] = {
+            'X': heart.data,
+            'y': heart.target.astype(int),
+            'description': "Heart Disease (Statlog)"
+        }
+        
+    except Exception as e:
+        print(f"Warning: Could not load some datasets: {e}")
+        
+    return datasets
