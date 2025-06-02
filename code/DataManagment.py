@@ -1,14 +1,20 @@
 import pandas as pd
 import numpy as np
+import random
 import os
+import torch
+from collections import defaultdict
+from itertools import combinations, product
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from typing import Optional, List, Callable, Tuple
 from numpy.typing import NDArray
+from torch.utils.data import Dataset as TorchDataset
+from sklearn.datasets import make_moons
 
-class DataLoader:
+class DistDataLoader:
     def __init__(self, data_path='data'):
             self.data_path = data_path
             self.dataset_loaders = {
@@ -17,7 +23,8 @@ class DataLoader:
             'seeds': self.load_seeds,
             'banknote': self.load_banknote,
             'heart': self.load_heart,
-            'adult': self.load_adult
+            'adult': self.load_adult,
+            'synthetic_moons': self.load_synthetic_moons
         }
 
     def load_dataset(self, dataset_name):
@@ -216,6 +223,24 @@ class DataLoader:
             print("Adult dataset not found locally. Please download it from UCI repository or run setup.sh script!")
             print("URL: https://archive.ics.uci.edu/ml/datasets/adult")
             return None
+        
+    def load_synthetic_moons(self, noise=0.3, n_samples=1000):
+        """Generate a non-linearly separable synthetic dataset (moons)."""
+        print(f"Generating synthetic moons dataset with {n_samples} samples and noise={noise}.")
+
+        X, y = make_moons(n_samples=n_samples, noise=noise, random_state=42)
+        feature_names = ['x1', 'x2']
+        target_names = ['Class 0', 'Class 1']
+
+        return Dataset(
+            name='synthetic_moons',
+            X=X,
+            y=y,
+            feature_names=feature_names,
+            target_names=target_names,
+            preprocessor=None,
+            categorical_cols=None
+        )
           
     def load_custom_dataset(self, filename):
         """Load a custom dataset and apply preprocessing."""
@@ -299,3 +324,79 @@ class Dataset:
         else:
             X_proc = self.X
         return X_proc, self.y
+    
+class SiameseDataset(TorchDataset):
+    def __init__(
+        self,
+        base_dataset: Dataset,
+        num_pairs: Optional[int] = None,
+        seed: Optional[int] = None,
+        exhaustive: bool = False
+    ):
+        self.X, self.y = base_dataset.get_processed_data()
+        self.num_pairs = num_pairs or len(self.y)
+        self.classes = np.unique(self.y)
+        self.class_indices = self._group_by_class()
+        self.rng = random.Random(seed)
+        self.pairs = self._generate_pairs() if not exhaustive else self.generate_all_pairs(self.X, self.y)
+
+    def _group_by_class(self) -> dict:
+        class_indices = defaultdict(list)
+        for idx, label in enumerate(self.y):
+            class_indices[label].append(idx)
+        return class_indices
+
+    def _generate_pairs(self) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+        pairs = []
+        for _ in range(self.num_pairs):
+            if self.rng.random() < 0.5:
+                # Positive pair
+                label = self.rng.choice(self.classes)
+                i1, i2 = self.rng.sample(self.class_indices[label], 2)
+                pairs.append((self.X[i1], self.X[i2], 1))
+            else:
+                # Negative pair
+                label1, label2 = self.rng.sample(list(self.classes), 2)
+                i1 = self.rng.choice(self.class_indices[label1])
+                i2 = self.rng.choice(self.class_indices[label2])
+                pairs.append((self.X[i1], self.X[i2], 0))
+        return pairs
+    
+    def generate_all_pairs(X: NDArray, y: NDArray) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+        class_indices = defaultdict(list)
+        for idx, label in enumerate(y):
+            class_indices[label].append(idx)
+
+        pairs = []
+
+        # Positive pairs
+        for indices in class_indices.values():
+            for i, j in combinations(indices, 2):
+                pairs.append((X[i], X[j], 1))
+
+        # Negative pairs
+        labels = list(class_indices.keys())
+        for i in range(len(labels)):
+            for j in range(i + 1, len(labels)):
+                for idx1 in class_indices[labels[i]]:
+                    for idx2 in class_indices[labels[j]]:
+                        pairs.append((X[idx1], X[idx2], 0))
+
+        return pairs
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int):
+        return self.pairs[idx]
+
+class SiameseTorchDataset(TorchDataset):
+    def __init__(self, base_dataset: Dataset, num_pairs: int = 1000, seed: int = 42):
+        self.pairs = SiameseDataset(base_dataset, num_pairs=num_pairs, seed=seed)
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x1, x2, label = self.pairs[idx]
+        return torch.tensor(x1, dtype=torch.float32), torch.tensor(x2, dtype=torch.float32), torch.tensor(label, dtype=torch.float32)

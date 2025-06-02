@@ -1,5 +1,9 @@
 from abc import ABC, abstractmethod
 import numpy as np
+import torch
+import torch.nn.functional as F
+from typing import Optional
+from Models import SiameseNetwork  # your model definition
 
 class MetricWrapper(ABC):
     @abstractmethod
@@ -31,6 +35,7 @@ class WeightedEuclideanMetric(MetricWrapper):
     
 class EuclideanMetric(MetricWrapper):
     def __call__(self, x1, x2):
+        print("Testing")
         value = np.linalg.norm(x1 - x2)
         self.assert_non_negative(value)
         return value
@@ -59,3 +64,30 @@ class InvertedEuclideanMetric(MetricWrapper):
 
     def get_params(self):
         return {}
+
+class SiameseNetworkMetric(MetricWrapper):
+    def __init__(
+        self,
+        model: SiameseNetwork,
+        device: str = "cpu",
+        threshold: Optional[float] = None
+    ):
+        self.model = model.to(device)
+        self.model.eval()
+        self.device = device
+        self.threshold = threshold 
+
+    def __call__(self, x1: np.ndarray, x2: np.ndarray) -> float:
+        t1 = torch.tensor(x1, dtype=torch.float32, device=self.device).unsqueeze(0)
+        t2 = torch.tensor(x2, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            e1 = self.model.forward_once(t1)
+            e2 = self.model.forward_once(t2)
+            distance = F.pairwise_distance(e1, e2).item()
+
+        self.assert_non_negative(distance)
+        return distance
+
+    def get_params(self):
+        return {"model": "SiameseNetwork", "device": self.device}
