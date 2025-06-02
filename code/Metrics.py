@@ -35,7 +35,6 @@ class WeightedEuclideanMetric(MetricWrapper):
     
 class EuclideanMetric(MetricWrapper):
     def __call__(self, x1, x2):
-        print("Testing")
         value = np.linalg.norm(x1 - x2)
         self.assert_non_negative(value)
         return value
@@ -61,6 +60,19 @@ class InvertedEuclideanMetric(MetricWrapper):
         value = 1.0 / np.linalg.norm(x1 - x2) if np.linalg.norm(x1 - x2) != 0 else float('inf')
         self.assert_non_negative(value)
         return value
+
+    def get_params(self):
+        return {}
+    
+class CosineDistanceMetric(MetricWrapper):
+    def __call__(self, x1, x2):
+        norm_x1 = np.linalg.norm(x1)
+        norm_x2 = np.linalg.norm(x2)
+        if norm_x1 == 0 or norm_x2 == 0:
+            raise ValueError("Cannot compute cosine similarity for zero vectors.")
+        value = np.dot(x1, x2) / (norm_x1 * norm_x2)
+        self.assert_non_negative(value)
+        return 1.0 - value
 
     def get_params(self):
         return {}

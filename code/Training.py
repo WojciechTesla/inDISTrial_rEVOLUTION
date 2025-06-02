@@ -19,7 +19,7 @@ def train_siamese(
     num_pairs: int = 5000,
     epochs: int = 10,
     device: Optional[str] = None,
-    save_path: str = "../models/siamese_model.pth"
+    save_dir: str = "../models"
 ):
     # Auto device selection
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,5 +54,6 @@ def train_siamese(
         print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
 
     # Save trained model
+    save_path = save_dir + f"/siamese_model_{dataset.name}.pth"
     torch.save(model.state_dict(), save_path)
     print(f"Model saved to {save_path}")
