@@ -7,7 +7,7 @@ from collections import defaultdict
 from itertools import combinations, product
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
 from typing import Optional, List, Callable, Tuple
 from numpy.typing import NDArray
@@ -224,7 +224,7 @@ class DistDataLoader:
             print("URL: https://archive.ics.uci.edu/ml/datasets/adult")
             return None
         
-    def load_synthetic_moons(self, noise=0.3, n_samples=1000, seed=random.randint(0, 9999)):
+    def load_synthetic_moons(self, noise=0.2, n_samples=200, seed=random.randint(0, 9999)):
         """Generate a non-linearly separable synthetic dataset (moons)."""
         # print(f"Generating synthetic moons dataset with () {n_samples} samples and noise={noise}.")
         print(f"Generating synthetic moons dataset with seed {seed}, {n_samples} samples and noise={noise}.")
@@ -317,7 +317,21 @@ class Dataset:
         self.feature_names = feature_names
         self.target_names = target_names
         self.preprocessor = preprocessor
+        self.numOfClasses = len(target_names)
         self.categorical_cols = categorical_cols if categorical_cols else []
+
+        # Label encoding: only if y is not already integer
+        if y.dtype.kind in {'U', 'S', 'O'} or not np.issubdtype(y.dtype, np.integer):
+            self.label_encoder = LabelEncoder()
+            self.y = self.label_encoder.fit_transform(y)
+        else:
+            self.label_encoder = None
+            self.y = y
+
+    def decode_label(self, y_encoded):
+        if self.label_encoder is not None:
+            return self.label_encoder.inverse_transform([y_encoded])[0]
+        return y_encoded
 
     def get_processed_data(self) -> Tuple[NDArray[np.float64], NDArray]:
         if self.preprocessor:
@@ -332,13 +346,17 @@ class SiameseDataset(TorchDataset):
         base_dataset: Dataset,
         num_pairs: Optional[int] = None,
         seed: Optional[int] = None,
-        exhaustive: bool = False
+        exhaustive: bool = False,
+        embeddings: Optional[NDArray[np.float64]] = None,
+        hard_negative_threshold: Optional[float] = None
     ):
         self.X, self.y = base_dataset.get_processed_data()
         self.num_pairs = num_pairs or len(self.y)
         self.classes = np.unique(self.y)
         self.class_indices = self._group_by_class()
         self.rng = random.Random(seed)
+        self.embeddings = embeddings
+        self.hard_negative_threshold = hard_negative_threshold
         self.pairs = self._generate_pairs() if not exhaustive else self.generate_all_pairs(self.X, self.y)
 
     def _group_by_class(self) -> dict:
@@ -349,18 +367,34 @@ class SiameseDataset(TorchDataset):
 
     def _generate_pairs(self) -> List[Tuple[np.ndarray, np.ndarray, int]]:
         pairs = []
-        for _ in range(self.num_pairs):
+        attempts = 0
+        max_attempts = self.num_pairs * 10  # prevent infinite loop
+
+        while len(pairs) < self.num_pairs and attempts < max_attempts:
+            attempts += 1
             if self.rng.random() < 0.5:
                 # Positive pair
                 label = self.rng.choice(self.classes)
+                if len(self.class_indices[label]) < 2:
+                    continue
                 i1, i2 = self.rng.sample(self.class_indices[label], 2)
-                pairs.append((self.X[i1], self.X[i2], 1))
+                pairs.append((self.X[i1], self.X[i2], 1, self.y[i1], self.y[i2]))
             else:
                 # Negative pair
                 label1, label2 = self.rng.sample(list(self.classes), 2)
-                i1 = self.rng.choice(self.class_indices[label1])
+                i1 = self.rng.choice(self.class_indices[label1])    
                 i2 = self.rng.choice(self.class_indices[label2])
-                pairs.append((self.X[i1], self.X[i2], 0))
+
+                # Hard negative filtering
+                if self.embeddings is not None and self.hard_negative_threshold is not None:
+                    dist = np.linalg.norm(self.embeddings[i1] - self.embeddings[i2])
+                    # print(f"Distance between {label1} and {label2}: {dist:.4f}")
+                    if dist > self.hard_negative_threshold:
+                        continue  # too easy, skip
+
+                pairs.append((self.X[i1], self.X[i2], 0, self.y[i1], self.y[i2]))
+        stats = analyze_pair_distances(self.embeddings, pairs)
+        print(stats)
         return pairs
     
     def generate_all_pairs(X: NDArray, y: NDArray) -> List[Tuple[np.ndarray, np.ndarray, int]]:
@@ -373,7 +407,7 @@ class SiameseDataset(TorchDataset):
         # Positive pairs
         for indices in class_indices.values():
             for i, j in combinations(indices, 2):
-                pairs.append((X[i], X[j], 1))
+                pairs.append((X[i], X[j], 1, y[i], y[j]))
 
         # Negative pairs
         labels = list(class_indices.keys())
@@ -381,7 +415,7 @@ class SiameseDataset(TorchDataset):
             for j in range(i + 1, len(labels)):
                 for idx1 in class_indices[labels[i]]:
                     for idx2 in class_indices[labels[j]]:
-                        pairs.append((X[idx1], X[idx2], 0))
+                        pairs.append((X[idx1], X[idx2], 0, y[idx1], y[idx2]))
 
         return pairs
 
@@ -392,12 +426,55 @@ class SiameseDataset(TorchDataset):
         return self.pairs[idx]
 
 class SiameseTorchDataset(TorchDataset):
-    def __init__(self, base_dataset: Dataset, num_pairs: int = 1000, seed: int = 42):
-        self.pairs = SiameseDataset(base_dataset, num_pairs=num_pairs, seed=seed)
+    def __init__(self,
+                base_dataset: Dataset,
+                num_pairs: int = 1000,
+                seed: int = 42, 
+                embeddings: Optional[np.ndarray] = None,
+                hard_negative_threshold: Optional[float] = None):
+        self.pairs = SiameseDataset(base_dataset, num_pairs=num_pairs, seed=seed, embeddings=embeddings, hard_negative_threshold=hard_negative_threshold).pairs
 
     def __len__(self):
         return len(self.pairs)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x1, x2, label = self.pairs[idx]
-        return torch.tensor(x1, dtype=torch.float32), torch.tensor(x2, dtype=torch.float32), torch.tensor(label, dtype=torch.float32)
+    def __getitem__(self, idx: int):
+        x1, x2, pair_label, y1, y2 = self.pairs[idx]
+        return (
+            torch.tensor(x1, dtype=torch.float32),
+            torch.tensor(x2, dtype=torch.float32),
+            torch.tensor(pair_label, dtype=torch.float32),
+            torch.tensor(y1, dtype=torch.long),
+            torch.tensor(y2, dtype=torch.long)
+        )
+    
+
+def analyze_pair_distances(embeddings, pairs):
+    same_class_distances = []
+    diff_class_distances = []
+
+    for x1, x2, pair_label, y1, y2 in pairs:
+        # Compute distance between embeddings
+        dist = np.linalg.norm(x1 - x2)
+        if pair_label == 1:
+            same_class_distances.append(dist)
+        else:
+            diff_class_distances.append(dist)
+
+    # Calculate statistics
+    stats = {
+        "same_class_mean": np.mean(same_class_distances),
+        "same_class_std": np.std(same_class_distances),
+        "diff_class_mean": np.mean(diff_class_distances),
+        "diff_class_std": np.std(diff_class_distances),
+        "same_class_outliers": np.sum(np.abs(same_class_distances - np.mean(same_class_distances)) > 3 * np.std(same_class_distances)),
+        "diff_class_outliers": np.sum(np.abs(diff_class_distances - np.mean(diff_class_distances)) > 3 * np.std(diff_class_distances)),
+    }
+
+    print("Same class mean:", stats["same_class_mean"])
+    print("Same class std:", stats["same_class_std"])
+    print("Same class outliers:", stats["same_class_outliers"])
+    print("Diff class mean:", stats["diff_class_mean"])
+    print("Diff class std:", stats["diff_class_std"])
+    print("Diff class outliers:", stats["diff_class_outliers"])
+
+    return stats

@@ -8,6 +8,7 @@ from typing import Union, Optional
 from DataManagment import Dataset, SiameseDataset
 import seaborn as sns
 import pandas as pd
+import torch
 
 
 def visualize_2d_projection(
@@ -84,3 +85,22 @@ def visualize_2d_projection(
         plt.show()
     else:
         plt.close()
+
+
+def visualize_embeddings(model, dataset, device='cpu'):
+    model.eval()
+    data = torch.tensor(dataset.X, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        embeddings = model.forward_once(data).cpu().numpy()
+
+    labels = np.array(dataset.Y)
+    tsne = TSNE(n_components=2, perplexity=30)
+    reduced = tsne.fit_transform(embeddings)
+
+    plt.figure(figsize=(10, 6))
+    for label in np.unique(labels):
+        idx = labels == label
+        plt.scatter(reduced[idx, 0], reduced[idx, 1], label=f'Class {label}', alpha=0.6)
+    plt.legend()
+    plt.title("t-SNE of Siamese Embeddings")
+    plt.show()

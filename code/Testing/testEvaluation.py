@@ -12,7 +12,7 @@ import os
 def get_siamese_model_for_dataset(dataset, input_dim, embedding_dim=128, model_path=None):
     if model_path is None:
         model_path = f"../models/siamese_model_{dataset.name}.pth"
-    model = SiameseNetwork(input_dim=input_dim, embedding_dim=embedding_dim)
+    model = SiameseNetwork(input_dim=input_dim, embedding_dim=embedding_dim, num_classes=len(dataset.target_names))
     if os.path.exists(model_path):
         print(f"🔍 Loading SiameseNetwork from {model_path}")
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
