@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class Evaluator:
     def __init__(self, random_state: int = random.randint(0, 9999)) -> None:
+        print(f"Evaluator initialized with random state: {random_state}")
         self.random_state = random_state
         pass
 
@@ -33,24 +34,15 @@ class Evaluator:
                 else:
                     diff_class_distances.append(dist)
 
-        # Visualization (optional)
-        sns.histplot(same_class_distances, color="blue", label="Same class", stat="density", bins=30, kde=True)
-        sns.histplot(diff_class_distances, color="red", label="Different class", stat="density", bins=30, kde=True)
-        plt.title(title or "Distance Distribution")
-        plt.xlabel("Distance")
-        plt.ylabel("Density")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-        # Summary stats
+        # Summary stats + raw distances
         return {
             "same_class_mean": np.mean(same_class_distances),
             "same_class_std": np.std(same_class_distances),
             "diff_class_mean": np.mean(diff_class_distances),
             "diff_class_std": np.std(diff_class_distances),
-            "margin": np.mean(diff_class_distances) - np.mean(same_class_distances)
+            "margin": np.mean(diff_class_distances) - np.mean(same_class_distances),
+            "same_class_distances": same_class_distances,
+            "diff_class_distances": diff_class_distances
         }
 
     def evaluateClassifier(self, dataset: Dataset, classifier: ClassifierWrapper, test_size: float = 0.3) -> float:
@@ -81,6 +73,9 @@ class Evaluator:
         X, y = dataset.get_processed_data()
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
         scores = []
+        misclassified_per_fold = []
+        distance_stats_per_fold = []
+
 
         for fold, (train_idx, test_idx) in enumerate(skf.split(X, y)):
             logger.info(f"Fold {fold + 1}/{n_splits}...")
@@ -96,9 +91,14 @@ class Evaluator:
 
             clf = classifier.clone()
             clf.fit(X_train, y_train)
+            y_pred = clf.predict(X_test)
             fold_score = clf.score(X_test, y_test)
             logger.info(f"Fold {fold + 1} accuracy: {fold_score:.4f}")
             scores.append(fold_score)
+
+            misclassified = test_idx[y_pred != y_test]
+            misclassified_dict = {int(idx): X[idx] for idx in misclassified}
+            misclassified_per_fold.append(misclassified_dict)
 
             if hasattr(clf, 'metric_func'):
                 logger.info("Computing distance distribution statistics for metric-based classifier...")
@@ -106,7 +106,26 @@ class Evaluator:
                     X_test, y_test, clf.metric_func, title=f"Fold {fold+1} Distance Distribution"
                 )
                 logger.info(f"Fold {fold+1} distance stats: {stats}")
+                distance_stats_per_fold.append(stats) 
 
         mean_score = np.mean(scores)
         logger.info(f"Mean cross-validation accuracy: {mean_score:.4f}")
-        return mean_score
+        return mean_score, misclassified_per_fold, distance_stats_per_fold
+    
+
+def show_all_fold_histograms(distance_stats_per_fold):
+    n_folds = len(distance_stats_per_fold)
+    fig, axes = plt.subplots(1, n_folds, figsize=(6 * n_folds, 5), sharey=True)
+    if n_folds == 1:
+        axes = [axes]
+    for i, stats in enumerate(distance_stats_per_fold):
+        ax = axes[i]
+        sns.histplot(stats['same_class_distances'], color="blue", label="Same class", stat="density", bins=30, kde=True, ax=ax)
+        sns.histplot(stats['diff_class_distances'], color="red", label="Different class", stat="density", bins=30, kde=True, ax=ax)
+        ax.set_title(f"Fold {i+1}")
+        ax.set_xlabel("Distance")
+        ax.set_ylabel("Density")
+        ax.legend()
+        ax.grid(True)
+    plt.tight_layout()
+    plt.show()

@@ -224,9 +224,10 @@ class DistDataLoader:
             print("URL: https://archive.ics.uci.edu/ml/datasets/adult")
             return None
         
-    def load_synthetic_moons(self, noise=0.3, n_samples=1000):
+    def load_synthetic_moons(self, noise=0.3, n_samples=1000, seed=random.randint(0, 9999)):
         """Generate a non-linearly separable synthetic dataset (moons)."""
-        print(f"Generating synthetic moons dataset with {n_samples} samples and noise={noise}.")
+        # print(f"Generating synthetic moons dataset with () {n_samples} samples and noise={noise}.")
+        print(f"Generating synthetic moons dataset with seed {seed}, {n_samples} samples and noise={noise}.")
 
         X, y = make_moons(n_samples=n_samples, noise=noise, random_state=42)
         feature_names = ['x1', 'x2']

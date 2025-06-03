@@ -75,7 +75,7 @@ def evaluate_model_metric_all_datasets(model_name: str, metric_name: str):
 
         metric_func = get_metric(metric_name, dataset)
         model = model_func(metric_func)
-        score = evaluator.crossValidateClassifier(dataset, model)
+        score, misclassified_per_fold, distDistribution  = evaluator.crossValidateClassifier(dataset, model)
         results.append({"Dataset": name, "Model": model_name, "Metric": metric_name, "Accuracy": score})
 
     return pd.DataFrame(results)
@@ -94,7 +94,7 @@ def evaluate_all_metrics_on_dataset(model_name: str, dataset_name: str):
     for metric_name in metric_funcs.keys():
         metric_func = get_metric(metric_name, dataset)
         model = classifier_classes[model_name](metric_func)
-        score = evaluator.crossValidateClassifier(dataset, model)
+        score, misclassified_per_fold, distDistribution  = evaluator.crossValidateClassifier(dataset, model)
         results.append({"Dataset": dataset_name, "Model": model_name, "Metric": metric_name, "Accuracy": score})
 
     return pd.DataFrame(results)
@@ -113,7 +113,7 @@ def evaluate_all_models_on_dataset(metric_name: str, dataset_name: str):
 
     for model_name, model_func in classifier_classes.items():
         model = model_func(metric_func)
-        score = evaluator.crossValidateClassifier(dataset, model)
+        score, misclassified_per_fold, distDistribution  = evaluator.crossValidateClassifier(dataset, model)
         results.append({"Dataset": dataset_name, "Model": model_name, "Metric": metric_name, "Accuracy": score})
 
     return pd.DataFrame(results)
@@ -134,7 +134,7 @@ def evaluate_all_combinations():
             for metric_name in metric_funcs.keys():
                 metric_func = get_metric(metric_name, dataset)
                 model = model_func(metric_func)
-                score = evaluator.crossValidateClassifier(dataset, model)
+                score, misclassified_per_fold, distDistribution  = evaluator.crossValidateClassifier(dataset, model)
                 results.append({
                     "Dataset": dataset_name,
                     "Model": model_name,
@@ -144,6 +144,25 @@ def evaluate_all_combinations():
 
     df = pd.DataFrame(results)
     return df
+
+def evaluate_combination(model_name: str, dataset_name: str, metric_name: str, n_splits: int = 5):
+    """
+    Evaluates a given classifier on a dataset with a specific metric.
+    Returns mean accuracy and misclassified indices per fold.
+    """
+    evaluator = Evaluator()
+    loader = DistDataLoader("../data")
+    dataset = loader.load_dataset(dataset_name)
+    if dataset is None:
+        print(f"❌ Failed to load {dataset_name}")
+        return None, None
+
+    metric_func = get_metric(metric_name, dataset)
+    model = classifier_classes[model_name](metric_func)
+    score, misclassified_per_fold, distDistribution = evaluator.crossValidateClassifier(dataset, model, n_splits=n_splits)
+    # print(f"Mean accuracy: {score:.4f}")
+    # print(f"Misclassified indices per fold: {misclassified_per_fold}")
+    return score, misclassified_per_fold, distDistribution
 
 
 def summarize_results(df: pd.DataFrame):

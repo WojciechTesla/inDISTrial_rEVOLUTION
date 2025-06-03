@@ -27,7 +27,7 @@ def train_siamese(
 
     # Default loss function if not provided
     if loss_fn is None:
-        loss_fn = ContrastiveLoss(margin=1.0)
+        loss_fn = ContrastiveLoss(margin=0.5)
 
     # Wrap the dataset into torch Dataset and DataLoader
     torch_dataset = SiameseTorchDataset(dataset, num_pairs=num_pairs)
