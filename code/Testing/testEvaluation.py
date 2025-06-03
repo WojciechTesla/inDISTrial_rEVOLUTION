@@ -44,7 +44,7 @@ metric_funcs = {
 }
 
 classifier_classes = {
-    "KNN": lambda metric: KNNWrapper(metric_func=metric, n_neighbors=10),
+    "KNN": lambda metric: KNNWrapper(metric_func=metric, n_neighbors=3, weights="distance"),
     "SVM": lambda metric: SVMWrapper(metric_func=metric),
     "NearestCentroid": lambda metric: NearestCentroidWrapper(metric_func=metric),
 }
