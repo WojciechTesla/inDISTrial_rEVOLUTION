@@ -60,23 +60,28 @@ class DistDataLoader:
             return None
     
     def load_wine(self):
-        """Load Wine dataset from local data folder."""
+        """Load Wine dataset from local data folder and binarize target into good/bad wine."""
         try:
             path = os.path.join(self.data_path, 'wine.csv')
             print(f"Loading Wine dataset from: {path}")
             df = pd.read_csv(path)
 
             X = df.iloc[:, :-1].values
-            y = df.iloc[:, -1].values
+            y_raw = df.iloc[:, -1].values
+
+            # Binarize the quality score: Good (>=6) vs Bad (<6)
+            y = np.where(y_raw >= 6, 'good wine', 'bad wine')
+
             feature_names = df.columns[:-1].tolist()
-            target_names = list(np.unique(y))
+            target_names = ['bad wine', 'good wine']
+
             return Dataset(
                 name='wine',
                 X=X,
                 y=y,
                 feature_names=feature_names,
                 target_names=target_names,
-                preprocessor=None,  # No preprocessing for this dataset
+                preprocessor=None,
                 categorical_cols=None
             )
         except Exception as e:

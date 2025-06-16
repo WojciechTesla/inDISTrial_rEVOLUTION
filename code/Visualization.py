@@ -93,7 +93,7 @@ def visualize_embeddings(model, dataset, device='cpu'):
     with torch.no_grad():
         embeddings = model.forward_once(data).cpu().numpy()
 
-    labels = np.array(dataset.Y)
+    labels = np.array(dataset.y)
     tsne = TSNE(n_components=2, perplexity=30)
     reduced = tsne.fit_transform(embeddings)
 
