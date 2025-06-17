@@ -7,6 +7,7 @@ from collections import defaultdict
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.base import clone
 from typing import Callable, Any
+from sklearn.metrics import f1_score, precision_score, recall_score, silhouette_score
 
 from DataManagment import Dataset
 from Classifiers import ClassifierWrapper
@@ -73,6 +74,10 @@ class Evaluator:
         X, y = dataset.get_processed_data()
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
         scores = []
+        f1s = []
+        precisions = []
+        recalls = []
+        silhouettes = []
         misclassified_per_fold = []
         distance_stats_per_fold = []
 
@@ -96,6 +101,14 @@ class Evaluator:
             logger.info(f"Fold {fold + 1} accuracy: {fold_score:.4f}")
             scores.append(fold_score)
 
+            f1s.append(f1_score(y_test, y_pred, average='weighted'))
+            precisions.append(precision_score(y_test, y_pred, average='weighted'))
+            recalls.append(recall_score(y_test, y_pred, average='weighted'))
+            try:
+                silhouettes.append(silhouette_score(X_test, y_pred))
+            except Exception:
+                silhouettes.append(float('nan'))
+
             misclassified = test_idx[y_pred != y_test]
             misclassified_dict = {int(idx): X[idx] for idx in misclassified}
             misclassified_per_fold.append(misclassified_dict)
@@ -109,7 +122,18 @@ class Evaluator:
                 distance_stats_per_fold.append(stats) 
 
         mean_score = np.mean(scores)
-        logger.info(f"Mean cross-validation accuracy: {mean_score:.4f}")
+        mean_f1 = np.nanmean(f1s)
+        mean_precision = np.nanmean(precisions)
+        mean_recall = np.nanmean(recalls)
+        mean_silhouette = np.nanmean(silhouettes)
+
+
+        logger.warning(f"Mean cross-validation accuracy: {mean_score:.4f}")
+        logger.warning(f"Mean F1: {mean_f1:.4f}")
+        logger.warning(f"Mean Precision: {mean_precision:.4f}")
+        logger.warning(f"Mean Recall: {mean_recall:.4f}")
+        logger.warning(f"Mean Silhouette: {mean_silhouette:.4f}")
+
         return mean_score, misclassified_per_fold, distance_stats_per_fold
     
 
