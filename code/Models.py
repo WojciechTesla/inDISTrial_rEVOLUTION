@@ -14,7 +14,7 @@ class SiameseNetwork(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Linear(256, embedding_dim)
-        )
+        )   
         self.classifier = nn.Linear(embedding_dim, num_classes) if num_classes else None
 
     def forward_once(self, x):
